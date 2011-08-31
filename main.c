@@ -74,6 +74,9 @@ static int load_config_file() {
 	dictionary *dic;
 	int i, n;
 	char *name;
+	char *extension_name = "extension";
+	int  extension_len = strlen(extension_name);
+	char buff[300];
 
 	dic = iniparser_load(context.config_filename);
 	n = iniparser_getnsec(dic);	
@@ -92,6 +95,30 @@ static int load_config_file() {
 	
 			pathval = iniparser_getstring(dic, "server:path", "notfound");
 			context.directory = strdup(pathval);
+		} else if (!strncmp(name, extension_name, extension_len)) {
+			char *type, *content_type,
+			*extension, *interpreter;
+			int type_id;
+
+			sprintf(buff, "%s:type", name);			
+			type = iniparser_getstring(dic, buff, "notfound");
+			
+			if (!strcmp(type, "CGI")) type_id = CGIT;
+			else if (!strcmp(type, "FILE")) type_id = FILET;
+
+			sprintf(buff, "%s:content_type", name);
+			content_type = iniparser_getstring(dic, buff, "notfound");
+
+			sprintf(buff, "%s:extension", name);			
+			extension = iniparser_getstring(dic, buff, "notfound");
+
+			sprintf(buff, "%s:interpreter", name);
+			interpreter = iniparser_getstring(dic, buff, "notfound");
+			if (!strcmp(interpreter, "notfound"))
+				interpreter = NULL;
+		
+			printf("%s %s %s %d\n", extension, content_type, interpreter, type_id);
+			http_add(&context.httpd, extension, content_type, interpreter, type_id);
 		}
 	}
 
@@ -103,6 +130,7 @@ freedic:
 int main(int argc, char **argv) {
 
 	init();
+	httpd_init(&context.httpd);
 	if (parse_args(argc, argv)) {
 		return EXIT_FAILURE;
 	}
@@ -110,7 +138,7 @@ int main(int argc, char **argv) {
 		return EXIT_FAILURE;
 	}
 
-	httpd_init(&context.httpd, context.port, context.nclients, context.directory);
+	httpd_set(&context.httpd, context.port, context.nclients, context.directory);
 	httpd_run(&context.httpd);
 
 	return EXIT_SUCCESS;

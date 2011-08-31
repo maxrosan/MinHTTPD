@@ -2,15 +2,22 @@
 #include "httpd.h"
 
 #include <regex.h>
+// XXX: Colocar data no cabeçalho de resposta
 
 int
-httpd_init(HTTPDContext *ctx, int port, int nclients, char *dir) {
+httpd_init(HTTPDContext *ctx) {
+	ctx->head.next = NULL;
+}
+
+int
+httpd_set(HTTPDContext *ctx, int port, int nclients, char *dir) {
 	assert(port > 0);
 	assert(nclients > 0);
 	
 	ctx->port = port;
 	ctx->nclients = nclients;
 	ctx->directory = strdup(dir);
+	//ctx->head.next = NULL;
 
 	return 0;
 }
@@ -45,25 +52,35 @@ __httpd_has_intepreter(HTTPClient *client, char *file) {
 
 static void
 __httpd_execute(HTTPClient *client, char *file) {
-#define GO(MSG) do { \
-	char *_msg = MSG; \
-	write(client->_connfd, _msg, strlen(_msg)); } while(0)
+//#define GO(MSG) do { \
+//	char *_msg = MSG; \
+//	write(client->_connfd, _msg, strlen(_msg)); } while(0)
 
-	printf("f = %s %s %d\n", file, client->_server->directory, __httpd_has_intepreter(client, file));
+#define SEND_MSG(MSG, ...) do { \
+	char *_msg = MSG; \
+	sprintf(tmpbuff, MSG,##__VA_ARGS__); fprintf(stderr, tmpbuff); \
+	write(client->_connfd, tmpbuff, strlen(tmpbuff)); } while(0)
+
+	char tmpbuff[300],
+	 readbuff[1024];
+
+	fprintf(stderr, "f = %s %s %d\n", file, client->_server->directory, __httpd_has_intepreter(client, file));
 
 	if (__httpd_has_intepreter(client, file) == -1) {
 		char *concat;
-		struct stat *buff;
-	
+		struct stat st;
+
 		concat = strcat(client->_server->directory, file);
-		fprintf(stderr, "=> %d open %s\n", client->_connfd, concat);
-		//write(client->_connfd, "WW\r\n", 4);
-		
-		if (!stat(concat, buff)) {
+	
+		if (!stat(concat, &st)) {
+
 			char *pt;
+			HTTPExtension *ext;
+			FILE *fp;
+			int nread;
 
 			pt = rindex(file, '.');
-
+#if 0
 			if (pt && !strcasecmp(".html", pt)) {
 				GO("HTTP/1.1 200 OK\r\n");
 				GO("Content-Type: text/plain\r\n");
@@ -72,11 +89,51 @@ __httpd_execute(HTTPClient *client, char *file) {
 				GO("12345678\r\n");
 				GO("\r\n");
 			}
+#endif
+			SEND_MSG("HTTP/1.1 200 OK\r\n");
+
+			ext = client->_server->head.next;
+			fprintf(stderr, "first = %p\n", ext);
+			while (ext) {
+				fprintf(stderr, "%s ? %s\n", ext->extension, pt);
+				if (!strcasecmp(ext->extension, pt)) {
+					break;
+				}
+				ext = ext->next;
+			}
+			
+			if (!ext) {
+				SEND_MSG("Content-Type: text/plain\n");
+			} else{
+				SEND_MSG("Content-Type: %s\n", ext->content_type);
+			}
+
+			fprintf(stderr, "ext = %s\n", ext->extension);
+
+			if (ext->type == FILET) {
+				SEND_MSG("Content-Length: %d\n", st.st_size);
+				SEND_MSG("\r\n");
+
+
+				fp = fopen(concat, "rb");
+				rewind(fp);
+				while (!feof(fp)) {
+					nread = fread(readbuff, 1, sizeof readbuff, fp);
+					write(client->_connfd, readbuff, nread);
+				}
+				fclose(fp);
+
+			} else { // CGIT
+			}
 
 		} else {
-			fprintf(stderr, "failed");
+			fprintf(stderr, "%s not found\n", concat);
+			SEND_MSG("HTTP/1.1 404 Not Found\r\n");
+			SEND_MSG("\r\n");
 		}
 	}
+
+	fprintf(stderr, "ok %d\n", __LINE__);
 
 }
 
@@ -166,9 +223,13 @@ httpd_response_client(HTTPClient* client) {
 
 		if (!strncmp("GET", readline, 3)) {
 			__httpd_get(client, readline);
-			//break;
+			break;
 		}
+
+		fprintf(stderr, "waiting\n");
 	}
+
+	fprintf(stderr, "OK\n");
 
 	exit(0);
 }
@@ -193,10 +254,15 @@ httpd_wait_clients(HTTPDContext *ctx) {
 		if (!p) { // child
 			HTTPClient client;
 
+			fprintf(stderr, "::: child = %p\n", ctx->head.next);
+
 			close(ctx->_listenfd);
 			client._connfd = connfd;
 			client._server = ctx;
 			httpd_response_client(&client);
+
+		} else {
+			fprintf(stderr, "::: parent = %p\n", ctx->head.next);
 		}
 		close(connfd);
 	}
@@ -232,4 +298,45 @@ httpd_run(HTTPDContext *ctx) {
 err_bind:
 	close(ctx->_listenfd);
 	return -1;
+}
+
+void
+http_add(HTTPDContext *ctx, char *extension, char *content_type, char *interpreter, int type) {
+
+	HTTPExtension *h = &ctx->head,
+	              *newext;
+	char *start, *end, *ext;
+	int len;
+
+	while (h->next != NULL)
+		h = h->next;
+	
+	start = end = extension;
+	while (*start) {
+		end = start;
+		while (*end && *end != ',') end++;
+		len = end-start;
+		ext = (char*) malloc(len+1);
+		memcpy(ext, start, len);
+		ext[len] = 0;
+		start = end + (*end == ',');
+		//
+		fprintf(stderr, "adding %s\n", ext);
+		//
+		newext = (HTTPExtension*) malloc(sizeof(HTTPExtension));
+		newext->extension = ext;
+		newext->content_type = strdup(content_type);
+		if (interpreter)
+			newext->interpreter = strdup(interpreter);
+		else
+			newext->interpreter = NULL;
+		newext->type = type;
+		newext->next = NULL;
+
+		h->next = newext;
+		h = newext;
+	}
+
+
+	fprintf(stderr, "head = %p\n", ctx->head.next);
 }
