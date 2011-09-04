@@ -1,7 +1,7 @@
 
 CC = gcc
-LIBS =  -L$(PWD)/lib/iniparser-2.17 -liniparser
-INC = -I./lib/iniparser-2.17/src
+LIBS =  -L$(PWD)/lib/iniparser-2.17 -liniparser `pkg-config --libs zlib`
+INC = -I./lib/iniparser-2.17/src `pkg-config --cflags zlib`
 FLAGS = -ggdb
 OBS = main.o httpd.o
 PROGRAM = minhttpd

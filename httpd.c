@@ -53,11 +53,6 @@ __http_match(const char *patt, char *value) {
 }
 
 static int
-__httpd_has_intepreter(HTTPClient *client, char *file) {
-	return -1;
-}
-
-static int
 __httpd_extension_return_if_name(HTTPExtension *ext, void *extensionname) {
 	assert(ext != NULL);
 	assert(extensionname != NULL);
@@ -66,14 +61,20 @@ __httpd_extension_return_if_name(HTTPExtension *ext, void *extensionname) {
 }
 
 void
-httpd_rfc822_time(char *buff, int size) {
+httpd_rfc822_time(char *buff, int size, time_t *te) {
 	struct tm *t;
 	time_t timev;
 
-	timev = time(NULL);
-	t = localtime(&timev);
+	assert(buff != NULL);
+	assert(size >= 0);
 
-	strftime(buff, size - 1, "%a, %d %b %Y %H:%M:%S %z", t);
+	if (te == NULL) {
+		timev = time(NULL);
+		t = localtime(&timev);
+	} else
+		t = localtime(te);
+
+	strftime(buff, size - 1, "%a, %d %b %Y %H:%M:%S GMT%z", t);
 }	
 
 static int
@@ -141,6 +142,7 @@ __httpd_execute(HTTPClient *client, char *file, HTTPMessage *msg) {
 	int page_not_found = FALSE;
 	const char *page_not_found_msg = "Page Not Found";
 	int temp_file = FALSE;
+	int compressed = FALSE, compressed_len = 0;
 
 	// XXX: free querystring, file
 	querystring = rindex(file, '?');
@@ -204,13 +206,56 @@ __httpd_execute(HTTPClient *client, char *file, HTTPMessage *msg) {
 		SEND_MSG("Content-Type: %s\n", ext->content_type);
 	}
 
-	httpd_rfc822_time(readbuff, sizeof readbuff);
+	httpd_rfc822_time(readbuff, sizeof readbuff, NULL);
 	SEND_MSG("Date: %s\n", readbuff);
 
+	if (file) {
+		httpd_rfc822_time(readbuff, sizeof readbuff, &st.st_mtime);
+		SEND_MSG("Last-Modified: %s\n", readbuff);
+	}
+
+	SEND_MSG("Server: MinHTTPD\n");
+
+	if (!msg->close_connection) {
+		SEND_MSG("Connection: Keep-Alive\n");
+		SEND_MSG("Keep-Alive: timeout=%d, max=%d\n", client->_server->keepalivetimeout, 
+		  client->_server->nclients);
+	} else {
+		SEND_MSG("Connection: close\n");
+	}
+
+	SEND_MSG("Accept-Ranges: bytes\n");
 
 	if (file) {
-		fp = fopen(concat, "rb");
+
+		if (msg->accept_encoding & GZIP_ENCONDING) {
+			gzFile outfile;
+			FILE *fin;
+			char *tmpfn;
+
+			fprintf(stderr, "Compressing gzip\n");
+
+			//XXX: Mudar por mkstemp	
+			tmpfn = tmpnam(NULL);
+			outfile = gzopen(tmpfn, "wb");
+			compressed = TRUE;
+			fin = fopen(concat, "rb");
+			while (!feof(fin)) {
+				nread = fread(readbuff, 1, sizeof readbuff, fin);
+				compressed_len += gzwrite(outfile, readbuff, nread);
+			}
+			fclose(fin);
+			gzclose(outfile);
+
+			fp = fopen(tmpfn, "rb");
+
+			SEND_MSG("Content-Encoding: gzip\n");
+		} else {
+			fp = fopen(concat, "rb");
+		}
+
 		if (fp) {
+			rewind(fp);
 			fseek(fp, 0L, SEEK_END);
 			SEND_MSG("Content-Length: %d\n", ftell(fp));
 			rewind(fp);
@@ -241,67 +286,9 @@ __httpd_execute(HTTPClient *client, char *file, HTTPMessage *msg) {
 		unlink(concat);
 	}
 
-		// CGI support disabled
-#if 0
-	} else { // CGIT
-		int lenoutput, i;
-		char* names[][2] = {
+	// CGI support disabled
 
-			{ "DOCUMENT_ROOT", client->_server->directory }, // The root directory of your server
-			{ NULL, NULL },
-			{ "HTTP_COOKIE", "" }, // The visitor's cookie, if one is set
-			{ "HTTP_HOST", "127.0.0.1" }, // The hostname of the page being attempted
-			{ "HTTP_REFERER", "" }, // The URL of the page that called your program
-			{ "HTTP_USER_AGENT", "" }, // The browser type of the visitor
-			//HTTPS 	"on" if the program is being called through a secure server
-			{ "PATH", client->_server->directory }, //The system path your server is running under
-			{ "QUERY_STRING", "" }, // The query string (see GET, below)
-			{ "REMOTE_ADDR", "127.0.0.1" }, // The IP address of the visitor
-			{ "REMOTE_HOST", "127.0.0.1" }, // The hostname of the visitor (if your server has reverse-name-lookups on; otherwise this is the IP address again)
-			{ "REMOTE_PORT", "1010" }, // The port the visitor is connected to on the web server
-			//REMOTE_USER 	The visitor's username (for .htaccess-protected pages)
-			{ "REQUEST_METHOD", "GET" }, // GET or POST
-			{ "REQUEST_URI", "" }, // The interpreted pathname of the requested document or CGI (relative to the document root)
-			{ "SCRIPT_FILENAME", concat }, //The full pathname of the current CGI
-			{ "SCRIPT_NAME", file }, // The interpreted pathname of the current CGI (relative to the document root)
-			{ "SERVER_ADMIN", "root@localhost" }, // The email address for your server's webmaster
-			{ "SERVER_NAME", "localhost" }, // Your server's fully qualified domain name (e.g. www.cgi101.com)
-			{ "SERVER_PORT", "8080" }, // The port number your server is listening on
-			{ "SERVER_SOFTWARE" , "MinHTTPD"}, // The server software you're using (e.g. Apache 1.3)
-			{ NULL, NULL }
-		};
-
-		i = 0;
-		while (names[i][0]) {
-			sprintf(readbuff, "%s=%s", names[i][0], names[i][1]);
-			putenv(readbuff);
-			fprintf(stderr, readbuff); fprintf(stderr, "\n");
-			i++;
-		}
-
-		sprintf(readbuff, "%s %s", ext->interpreter, concat);
-		fprintf(stderr, readbuff);
-		fp = popen(readbuff, "r");
-		if (fp != NULL) {
-			fseek(fp, 0, SEEK_END);
-			lenoutput = ftell(fp);
-			rewind(fp);
-
-			SEND_MSG("Content-Length: %d\n", lenoutput);
-
-			while (!feof(fp)) {
-				nread = fread(readbuff, 1, sizeof readbuff, fp);
-				write(client->_connfd, readbuff, nread);
-			}
-			fclose(fp);
-		} else {
-			// XXX: O que fazer em caso de erro?
-			fprintf(stderr, "Failed to execute %s\n", readbuff);
-		}
-	}
-#endif
-
-fprintf(stderr, "ok %d\n", __LINE__);
+	fprintf(stderr, "ok %d\n", __LINE__);
 
 }
 
@@ -371,13 +358,35 @@ httpd_get(HTTPClient *client, char *rl, HTTPMessage *msg) {
 
 	printf("dir = %s\n", client->_server->directory);
 
+	// XXX: Some variables are not used
 	if (vhost) free(vhost);
 	if (vuseragent) free(vuseragent);
 	if (version) free(version);
 	if (vacceptlang) free(vacceptlang);
 	if (vaccept) free(vaccept);
 	if (vacceptcharset) free(vacceptcharset);
-	if (vacceptenc) free(vacceptenc);
+
+	if (vacceptenc)	{
+		pt = vacceptenc;
+		while (*pt) {
+			while (*pt == ' ') pt++;
+			if (__cmp_cst("deflate", pt, TRUE)) {
+				msg->accept_encoding |= DEFLATE_ENCODING;
+				fprintf(stderr, "deflate supported\n");
+			} else if (__cmp_cst("gzip", pt, TRUE)) {
+				msg->accept_encoding |= GZIP_ENCONDING;
+				fprintf(stderr, "gzip supported\n");
+			} else {
+				msg->accept_encoding |= INVALID_ENCODING;
+				fprintf(stderr, "Format not supported found\n");
+			}
+			while (*pt && *pt != ',') pt++;
+			if (*pt == ',') pt++;
+		}
+
+		free(vacceptenc);
+	}
+
 	if (vconnection) {
 		msg->close_connection = __cmp_cst("close", vconnection, TRUE);
 		free(vconnection);
@@ -393,6 +402,7 @@ static void
 http_message_init(HTTPMessage *msg) {
 	msg->command          = UNDEFINED_CMD;
 	msg->close_connection = FALSE;
+	msg->accept_encoding = 0;
 }
 
 static void

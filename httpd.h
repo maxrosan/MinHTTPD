@@ -18,6 +18,7 @@
 #include <grp.h>
 #include <locale.h>
 #include <fcntl.h>
+#include <zlib.h>
 
 #define TRUE 1
 #define FALSE 0
@@ -33,10 +34,18 @@ enum {
 	POST_CMD,
 };
 
+enum {
+	UNDEFINED_ECONDING = 0,
+	GZIP_ENCONDING = (1 << 1),
+	DEFLATE_ENCODING = (1 << 2),
+	INVALID_ENCODING = (1 << 3),
+};
+
 typedef struct {
 	char *filen;
 	int command;
 	int close_connection;
+	int accept_encoding;
 } HTTPMessage;
 
 enum HTTP_extension_type {
@@ -79,6 +88,6 @@ void http_add(HTTPDContext *ctx, char *extensionname, char *content_type, char *
 void http_dump_extension(HTTPExtension *ctx);
 void httpd_foreach_extension(HTTPExtension *head, void (*func)(HTTPExtension *ext));
 HTTPExtension* httpd_extension_return_if(HTTPExtension *head, int (*func)(HTTPExtension *ext, void*), void *data);
-void httpd_rfc822_time(char *buff, int size);
+void httpd_rfc822_time(char *buff, int size, time_t *te);
 
 #endif
