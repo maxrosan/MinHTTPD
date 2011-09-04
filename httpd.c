@@ -2,22 +2,29 @@
 #include "httpd.h"
 
 #include <regex.h>
+#include <dirent.h>
+
 // XXX: Colocar data no cabeçalho de resposta
+
+inline static int __cmp_cst(const char *cst, char *noncst, int casesen) {
+	if (!casesen)
+		return !strncmp(cst, noncst, strlen(cst));
+	return !strncasecmp(cst, noncst, strlen(cst));
+}
 
 int
 httpd_init(HTTPDContext *ctx) {
 	ctx->head.next = NULL;
+	ctx->errorpage = NULL;
 }
 
 int
-httpd_set(HTTPDContext *ctx, int port, int nclients, char *dir) {
+httpd_set(HTTPDContext *ctx, int port, int nclients) {
 	assert(port > 0);
 	assert(nclients > 0);
 	
 	ctx->port = port;
 	ctx->nclients = nclients;
-	ctx->directory = strdup(dir);
-	//ctx->head.next = NULL;
 
 	return 0;
 }
@@ -50,95 +57,256 @@ __httpd_has_intepreter(HTTPClient *client, char *file) {
 	return -1;
 }
 
-static void
-__httpd_execute(HTTPClient *client, char *file) {
-//#define GO(MSG) do { \
-//	char *_msg = MSG; \
-//	write(client->_connfd, _msg, strlen(_msg)); } while(0)
+static int
+__httpd_extension_return_if_name(HTTPExtension *ext, void *extensionname) {
+	assert(ext != NULL);
+	assert(extensionname != NULL);
 
-#define SEND_MSG(MSG, ...) do { \
+	return !strcasecmp((char*) extensionname, ext->extension);
+}
+
+void
+httpd_rfc822_time(char *buff, int size) {
+	struct tm *t;
+	time_t timev;
+
+	timev = time(NULL);
+	t = localtime(&timev);
+
+	strftime(buff, size - 1, "%a, %d %b %Y %H:%M:%S %z", t);
+}	
+
+static int
+__httpd_generate_dir_list(char *dir, char *buff, char *filen) {
+#define WR_CODE(MSG, ...) do { \
 	char *_msg = MSG; \
-	sprintf(tmpbuff, MSG,##__VA_ARGS__); fprintf(stderr, tmpbuff); \
-	write(client->_connfd, tmpbuff, strlen(tmpbuff)); } while(0)
+	sprintf(buff, MSG,##__VA_ARGS__); \
+	fwrite(buff, 1, strlen(buff), fp); } while(0)
 
-	char tmpbuff[300],
-	 readbuff[1024];
+	FILE *fp;
+	DIR *fdir;
+	struct dirent *ent;
+	struct stat st;
+	char datestring[256];
+	struct tm *tm;
 
-	fprintf(stderr, "f = %s %s %d\n", file, client->_server->directory, __httpd_has_intepreter(client, file));
+	fdir = opendir(dir);
+	if (fdir == NULL)
+		return FALSE;
 
-	if (__httpd_has_intepreter(client, file) == -1) {
-		char *concat;
-		struct stat st;
+	srand(time(NULL));
+	sprintf(filen, "%s/index_%d_%d.html", dir, time(NULL), rand());
 
-		concat = strcat(client->_server->directory, file);
-	
-		if (!stat(concat, &st)) {
+	fp = fopen(filen, "w+");
+	WR_CODE("<html><body>");
 
-			char *pt;
-			HTTPExtension *ext;
-			FILE *fp;
-			int nread;
-
-			pt = rindex(file, '.');
-#if 0
-			if (pt && !strcasecmp(".html", pt)) {
-				GO("HTTP/1.1 200 OK\r\n");
-				GO("Content-Type: text/plain\r\n");
-				GO("Content-Length: 8\r\n");
-				GO("\r\n");
-				GO("12345678\r\n");
-				GO("\r\n");
-			}
-#endif
-			SEND_MSG("HTTP/1.1 200 OK\r\n");
-
-			ext = client->_server->head.next;
-			fprintf(stderr, "first = %p\n", ext);
-			while (ext) {
-				fprintf(stderr, "%s ? %s\n", ext->extension, pt);
-				if (!strcasecmp(ext->extension, pt)) {
-					break;
-				}
-				ext = ext->next;
-			}
-			
-			if (!ext) {
-				SEND_MSG("Content-Type: text/plain\n");
-			} else{
-				SEND_MSG("Content-Type: %s\n", ext->content_type);
-			}
-
-			fprintf(stderr, "ext = %s\n", ext->extension);
-
-			if (ext->type == FILET) {
-				SEND_MSG("Content-Length: %d\n", st.st_size);
-				SEND_MSG("\r\n");
-
-
-				fp = fopen(concat, "rb");
-				rewind(fp);
-				while (!feof(fp)) {
-					nread = fread(readbuff, 1, sizeof readbuff, fp);
-					write(client->_connfd, readbuff, nread);
-				}
-				fclose(fp);
-
-			} else { // CGIT
-			}
-
-		} else {
-			fprintf(stderr, "%s not found\n", concat);
-			SEND_MSG("HTTP/1.1 404 Not Found\r\n");
-			SEND_MSG("\r\n");
+	while (ent = readdir(fdir)) {
+		if (!strstr(filen, ent->d_name)) {
+			sprintf(buff, "%s/%s", ent->d_name);
+			stat(buff, &st);
+			WR_CODE("<a href=\"%s\">%s</a> ", ent->d_name, ent->d_name);
+			tm = localtime(&st.st_mtime);
+			strftime(datestring, sizeof(datestring), nl_langinfo(D_T_FMT), tm);
+			WR_CODE(" %s ", datestring);
+			WR_CODE("<br/>");
 		}
 	}
 
-	fprintf(stderr, "ok %d\n", __LINE__);
+	WR_CODE("</body></html>");
+	fclose(fp);
+	closedir(fdir);
+
+	return TRUE;
+}
+
+static void
+__httpd_execute(HTTPClient *client, char *file, HTTPMessage *msg) {
+#define SEND_MSG(MSG, ...) do { \
+	char *_msg = MSG; \
+	sprintf(tmpbuff, MSG,##__VA_ARGS__); \
+	write(client->_connfd, tmpbuff, strlen(tmpbuff)); } while(0)
+
+	char tmpbuff[300],
+	     readbuff[1024],
+	     concat[1024];
+	char *querystring;
+	struct stat st;
+	int lenconcat;
+	FILE *fp;
+	int nread;
+	char *pt;
+	HTTPExtension *ext;
+	int code_response;
+	const char *code_msg;
+	int page_not_found = FALSE;
+	const char *page_not_found_msg = "Page Not Found";
+	int temp_file = FALSE;
+
+	// XXX: free querystring, file
+	querystring = rindex(file, '?');
+	if (querystring != NULL) {
+		char *fn;
+		fn = querystring;
+		querystring = strdup(querystring+1);
+		file = strndup(file, fn-file);
+
+		fprintf(stderr, "qs = %s\n file = %s\n", querystring, file);
+	}
+
+	lenconcat=(strlen(client->_server->directory)+1);
+	memcpy(concat, client->_server->directory, lenconcat);
+	strncat(concat, file, sizeof(concat) - lenconcat);
+
+	code_response = 200;
+	code_msg = "OK";
+
+	if (stat(concat, &st)) {
+		file = client->_server->errorpage;	
+		if (file) {
+			lenconcat = strlen(client->_server->directory);
+			memcpy(concat, client->_server->directory, lenconcat+1);
+			concat[lenconcat] = '/';
+			concat[lenconcat + 1] = 0;
+			strncat(concat, client->_server->errorpage, sizeof(concat) - lenconcat);
+		}
+		code_response = 404;
+		code_msg = "Not Found";
+	}
+
+	if (S_ISDIR(st.st_mode)) {
+		fprintf(stderr, "directory %s\n", concat);
+		if (__httpd_generate_dir_list(concat, readbuff, tmpbuff)) {
+			memcpy(concat, tmpbuff, strlen(tmpbuff)+1);
+			fprintf(stderr, "file = %s\n", concat);
+			file = rindex(concat, '/');
+			temp_file = TRUE;
+		} else {
+			code_response = 404;
+			code_msg = "Not Found";
+		}
+	}
+		
+
+	SEND_MSG("HTTP/1.1 %d %s\r\n", code_response, code_msg);
+
+	if (file) {
+		pt = rindex(file, '.');
+		ext = httpd_extension_return_if(&client->_server->head, __httpd_extension_return_if_name, 
+		  (void*) pt);
+	} else {
+		ext = NULL;
+	}
+
+
+	if (!ext) {
+		SEND_MSG("Content-Type: text/plain\n");
+	} else{
+		SEND_MSG("Content-Type: %s\n", ext->content_type);
+	}
+
+	httpd_rfc822_time(readbuff, sizeof readbuff);
+	SEND_MSG("Date: %s\n", readbuff);
+
+
+	if (file) {
+		fp = fopen(concat, "rb");
+		if (fp) {
+			fseek(fp, 0L, SEEK_END);
+			SEND_MSG("Content-Length: %d\n", ftell(fp));
+			rewind(fp);
+
+			SEND_MSG("\r\n");
+			
+			while (!feof(fp)) {
+				nread = fread(readbuff, 1, sizeof readbuff, fp);
+				write(client->_connfd, readbuff, nread);
+			}
+			fclose(fp);
+		} else {
+			perror("fopen: ");
+			
+			page_not_found = TRUE;
+		}
+	} else {
+			page_not_found = TRUE;
+	}
+
+	if (page_not_found) {
+		SEND_MSG("Content-Length: %d\n", strlen(page_not_found_msg));
+		SEND_MSG("\r\n");
+		SEND_MSG("%s", page_not_found_msg);
+	}
+
+	if (temp_file) {
+		unlink(concat);
+	}
+
+		// CGI support disabled
+#if 0
+	} else { // CGIT
+		int lenoutput, i;
+		char* names[][2] = {
+
+			{ "DOCUMENT_ROOT", client->_server->directory }, // The root directory of your server
+			{ NULL, NULL },
+			{ "HTTP_COOKIE", "" }, // The visitor's cookie, if one is set
+			{ "HTTP_HOST", "127.0.0.1" }, // The hostname of the page being attempted
+			{ "HTTP_REFERER", "" }, // The URL of the page that called your program
+			{ "HTTP_USER_AGENT", "" }, // The browser type of the visitor
+			//HTTPS 	"on" if the program is being called through a secure server
+			{ "PATH", client->_server->directory }, //The system path your server is running under
+			{ "QUERY_STRING", "" }, // The query string (see GET, below)
+			{ "REMOTE_ADDR", "127.0.0.1" }, // The IP address of the visitor
+			{ "REMOTE_HOST", "127.0.0.1" }, // The hostname of the visitor (if your server has reverse-name-lookups on; otherwise this is the IP address again)
+			{ "REMOTE_PORT", "1010" }, // The port the visitor is connected to on the web server
+			//REMOTE_USER 	The visitor's username (for .htaccess-protected pages)
+			{ "REQUEST_METHOD", "GET" }, // GET or POST
+			{ "REQUEST_URI", "" }, // The interpreted pathname of the requested document or CGI (relative to the document root)
+			{ "SCRIPT_FILENAME", concat }, //The full pathname of the current CGI
+			{ "SCRIPT_NAME", file }, // The interpreted pathname of the current CGI (relative to the document root)
+			{ "SERVER_ADMIN", "root@localhost" }, // The email address for your server's webmaster
+			{ "SERVER_NAME", "localhost" }, // Your server's fully qualified domain name (e.g. www.cgi101.com)
+			{ "SERVER_PORT", "8080" }, // The port number your server is listening on
+			{ "SERVER_SOFTWARE" , "MinHTTPD"}, // The server software you're using (e.g. Apache 1.3)
+			{ NULL, NULL }
+		};
+
+		i = 0;
+		while (names[i][0]) {
+			sprintf(readbuff, "%s=%s", names[i][0], names[i][1]);
+			putenv(readbuff);
+			fprintf(stderr, readbuff); fprintf(stderr, "\n");
+			i++;
+		}
+
+		sprintf(readbuff, "%s %s", ext->interpreter, concat);
+		fprintf(stderr, readbuff);
+		fp = popen(readbuff, "r");
+		if (fp != NULL) {
+			fseek(fp, 0, SEEK_END);
+			lenoutput = ftell(fp);
+			rewind(fp);
+
+			SEND_MSG("Content-Length: %d\n", lenoutput);
+
+			while (!feof(fp)) {
+				nread = fread(readbuff, 1, sizeof readbuff, fp);
+				write(client->_connfd, readbuff, nread);
+			}
+			fclose(fp);
+		} else {
+			// XXX: O que fazer em caso de erro?
+			fprintf(stderr, "Failed to execute %s\n", readbuff);
+		}
+	}
+#endif
+
+fprintf(stderr, "ok %d\n", __LINE__);
 
 }
 
 static void
-__httpd_get(HTTPClient *client, char *rl) {
+httpd_get(HTTPClient *client, char *rl, HTTPMessage *msg) {
 #define GETVAR(VAR, CST) do { \
 	char *var = CST; \
 	while (*pt != ':') pt++; \
@@ -193,6 +361,8 @@ __httpd_get(HTTPClient *client, char *rl) {
 			GETVAR(vacceptcharset, "Accept-Charset");
 		} else if (!strncmp(pt, "Accept", 6)) {
 			GETVAR(vaccept, "Accept");
+		} else if (!strncmp(pt, "Connection", 10)) {
+			GETVAR(vconnection, "Connection");
 		}
 
 		pt = strtok(NULL, "\n");
@@ -201,32 +371,112 @@ __httpd_get(HTTPClient *client, char *rl) {
 
 	printf("dir = %s\n", client->_server->directory);
 
-	if (filen) {
-		__httpd_execute(client, filen);
-	}
-
 	if (vhost) free(vhost);
 	if (vuseragent) free(vuseragent);
-	if (filen) free(filen);
 	if (version) free(version);
+	if (vacceptlang) free(vacceptlang);
+	if (vaccept) free(vaccept);
+	if (vacceptcharset) free(vacceptcharset);
+	if (vacceptenc) free(vacceptenc);
+	if (vconnection) {
+		msg->close_connection = __cmp_cst("close", vconnection, TRUE);
+		free(vconnection);
+	}
+
+	if (filen) {
+		__httpd_execute(client, filen, msg);
+		free(filen);
+	}
+}
+
+static void
+http_message_init(HTTPMessage *msg) {
+	msg->command          = UNDEFINED_CMD;
+	msg->close_connection = FALSE;
+}
+
+static void
+http_message_clean(HTTPMessage *msg) {
+	return;
+}
+
+void
+httpd_setdirectory(HTTPDContext *ctx, const char *dir) {
+	assert(ctx != NULL);
+	assert(dir != NULL);
+
+	ctx->directory = strdup(dir);
+}
+
+void
+httpd_setkeepalivetimeout(HTTPDContext *ctx, int keepalivetimeout) {
+	assert(keepalivetimeout >= 0);
+	assert(ctx != NULL);
+
+	ctx->keepalivetimeout = keepalivetimeout;
+}
+
+void
+httpd_seterrorpage(HTTPDContext *ctx, const char *errorpage) {
+	assert(errorpage != NULL);
+	assert(ctx != NULL);
+
+	ctx->errorpage = strdup(errorpage);
 }
 
 static void
 httpd_response_client(HTTPClient* client) {
 	int n;
 	char readline[HTTPD_MAXLINE + 1];
+	int closecon = FALSE;
+	HTTPMessage msg;
 
-	while ((n = read(client->_connfd, readline, HTTPD_MAXLINE)) > 0) {
+	while (!closecon && (n = read(client->_connfd, readline, HTTPD_MAXLINE)) > 0) {
 		readline[n] = 0;
+		http_message_init(&msg);
 
 		printf("cmd %s\n", readline);
 
-		if (!strncmp("GET", readline, 3)) {
-			__httpd_get(client, readline);
-			break;
+		if (__cmp_cst("GET", readline, FALSE)) {
+			msg.command = GET_CMD;
+		} else if (__cmp_cst("POST", readline, FALSE)) {
+			msg.command = POST_CMD;
 		}
 
-		fprintf(stderr, "waiting\n");
+		if (msg.command == UNDEFINED_CMD) {
+			msg.close_connection = TRUE;
+		} else {
+			httpd_get(client, readline, &msg);
+		}
+
+		closecon = msg.close_connection;
+
+		http_message_clean(&msg);
+
+		if (!closecon) {
+			fd_set rfds;
+			struct timeval tv;
+			int retval;
+
+			FD_ZERO(&rfds);
+			FD_SET(client->_connfd, &rfds);
+			
+			tv.tv_sec = client->_server->keepalivetimeout;
+			tv.tv_usec = 0;
+
+			fprintf(stderr, "Waiting %d seconds...\n", tv.tv_sec);
+
+			retval = select(client->_connfd + 1, &rfds, NULL, NULL, &tv);
+			if (retval == -1) {
+				perror("select");
+				closecon = TRUE;
+			} else if (retval == 0) {
+				closecon = TRUE;
+			} else {
+				fprintf(stderr, "Reading a new req\n");
+				closecon = FALSE;
+			}
+		}
 	}
 
 	fprintf(stderr, "OK\n");
@@ -247,8 +497,8 @@ httpd_wait_clients(HTTPDContext *ctx) {
 		if (connfd == -1) {
 			ret = -1;
 			break;
-		}
-		
+		}	
+	
 		p = fork();
 
 		if (!p) { // child
@@ -263,6 +513,7 @@ httpd_wait_clients(HTTPDContext *ctx) {
 
 		} else {
 			fprintf(stderr, "::: parent = %p\n", ctx->head.next);
+
 		}
 		close(connfd);
 	}
@@ -301,7 +552,18 @@ err_bind:
 }
 
 void
-http_add(HTTPDContext *ctx, char *extension, char *content_type, char *interpreter, int type) {
+http_dump_extension(HTTPExtension *ext) {
+	fprintf(stderr, "\n\n============\n");
+	fprintf(stderr, "extension = (%p)\n", ext->extension, ext->extension);
+	fprintf(stderr, "content_type = (%p)\n", ext->content_type, ext->content_type);
+	fprintf(stderr, "interpreter = (%p)\n", ext->interpreter, ext->interpreter);
+	fprintf(stderr, "type = %d\n", ext->type);
+	fprintf(stderr, "next = %p\n", ext->next);
+	fprintf(stderr, "============\n\n");
+}
+
+void
+http_add(HTTPDContext *ctx, char *extensionname, char *content_type, char *interpreter, int type) {
 
 	HTTPExtension *h = &ctx->head,
 	              *newext;
@@ -311,20 +573,21 @@ http_add(HTTPDContext *ctx, char *extension, char *content_type, char *interpret
 	while (h->next != NULL)
 		h = h->next;
 	
-	start = end = extension;
+	start = end = extensionname;
 	while (*start) {
 		end = start;
 		while (*end && *end != ',') end++;
 		len = end-start;
-		ext = (char*) malloc(len+1);
+		ext = (char*) malloc(len+2);
 		memcpy(ext, start, len);
 		ext[len] = 0;
 		start = end + (*end == ',');
 		//
-		fprintf(stderr, "adding %s\n", ext);
+		fprintf(stderr, "adding %s (%d) (%p)\n", ext, len, ext);
 		//
 		newext = (HTTPExtension*) malloc(sizeof(HTTPExtension));
 		newext->extension = ext;
+		fprintf(stderr, "ext = %p\n", newext->extension);
 		newext->content_type = strdup(content_type);
 		if (interpreter)
 			newext->interpreter = strdup(interpreter);
@@ -333,10 +596,45 @@ http_add(HTTPDContext *ctx, char *extension, char *content_type, char *interpret
 		newext->type = type;
 		newext->next = NULL;
 
+		fprintf(stderr, "last = %p\n", newext);
+
 		h->next = newext;
 		h = newext;
 	}
 
-
 	fprintf(stderr, "head = %p\n", ctx->head.next);
+}
+
+void
+httpd_foreach_extension(HTTPExtension *head, void (*func) (HTTPExtension *ext)) {
+	HTTPExtension *ext;
+	
+	assert(head != NULL);
+	assert(func != NULL);
+
+	ext = head->next;
+	while (ext) {
+		func(ext);
+		ext = ext->next;
+	}
+}
+
+HTTPExtension*
+httpd_extension_return_if(HTTPExtension *head, int (*func)(HTTPExtension *ext, void *data), void *data) {
+	HTTPExtension *ext, *ret;
+
+	assert(head != NULL);
+	assert(func != NULL);
+
+	ext = head->next;
+	ret = NULL;
+	while (ext) {
+		if (func(ext, data)) {
+			ret = ext;
+			ext = NULL;
+		} else
+			ext = ext->next;
+	}
+
+	return ret;
 }

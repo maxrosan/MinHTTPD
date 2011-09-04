@@ -10,7 +10,6 @@ struct {
 	int port;
 	int nclients;
 	char *config_filename;
-	char *directory;
 	//
 	HTTPDContext httpd;
 } context;
@@ -30,7 +29,6 @@ init() {
 	context.port = -1;
 	context.nclients = 1;
 	context.config_filename = "config.ini";
-	context.directory = "./";
 }
 
 inline static int
@@ -77,6 +75,7 @@ static int load_config_file() {
 	char *extension_name = "extension";
 	int  extension_len = strlen(extension_name);
 	char buff[300];
+	char *dir;
 
 	dic = iniparser_load(context.config_filename);
 	n = iniparser_getnsec(dic);	
@@ -91,10 +90,16 @@ static int load_config_file() {
 	for (i = 0; i < n; i++) {
 		name = iniparser_getsecname(dic, i);
 		if (!strcmp(name, "server")) {
-			char *pathval;
+			char *pathval, *keepalivetimeout,
+			  *errorpage;
 	
 			pathval = iniparser_getstring(dic, "server:path", "notfound");
-			context.directory = strdup(pathval);
+			keepalivetimeout = iniparser_getstring(dic, "server:keepalivetimeout", "10");
+			errorpage = iniparser_getstring(dic, "server:errorpage", "notfound");
+			httpd_setkeepalivetimeout(&context.httpd, atoi(keepalivetimeout));
+			httpd_setdirectory(&context.httpd, pathval);
+			if (strcmp(errorpage, "notfound"))
+				httpd_seterrorpage(&context.httpd, errorpage);
 		} else if (!strncmp(name, extension_name, extension_len)) {
 			char *type, *content_type,
 			*extension, *interpreter;
@@ -103,8 +108,7 @@ static int load_config_file() {
 			sprintf(buff, "%s:type", name);			
 			type = iniparser_getstring(dic, buff, "notfound");
 			
-			if (!strcmp(type, "CGI")) type_id = CGIT;
-			else if (!strcmp(type, "FILE")) type_id = FILET;
+			if (!strcmp(type, "FILE")) type_id = FILET;
 
 			sprintf(buff, "%s:content_type", name);
 			content_type = iniparser_getstring(dic, buff, "notfound");
@@ -130,6 +134,7 @@ freedic:
 int main(int argc, char **argv) {
 
 	init();
+	fprintf(stderr, "%d OK\n", __LINE__);
 	httpd_init(&context.httpd);
 	if (parse_args(argc, argv)) {
 		return EXIT_FAILURE;
@@ -138,7 +143,9 @@ int main(int argc, char **argv) {
 		return EXIT_FAILURE;
 	}
 
-	httpd_set(&context.httpd, context.port, context.nclients, context.directory);
+	fprintf(stderr, "%d OK\n", __LINE__);
+	httpd_set(&context.httpd, context.port, context.nclients);
+	fprintf(stderr, "OK\n");
 	httpd_run(&context.httpd);
 
 	return EXIT_SUCCESS;
