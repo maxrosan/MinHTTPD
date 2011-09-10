@@ -89,5 +89,6 @@ void http_dump_extension(HTTPExtension *ctx);
 void httpd_foreach_extension(HTTPExtension *head, void (*func)(HTTPExtension *ext));
 HTTPExtension* httpd_extension_return_if(HTTPExtension *head, int (*func)(HTTPExtension *ext, void*), void *data);
 void httpd_rfc822_time(char *buff, int size, time_t *te);
+int httpd_file_exists(const char *path);
 
 #endif

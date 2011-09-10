@@ -410,10 +410,22 @@ http_message_clean(HTTPMessage *msg) {
 	return;
 }
 
+int
+httpd_file_exists(const char *path) {
+	struct stat st;
+
+	return !stat(path, &st);
+}
+
 void
 httpd_setdirectory(HTTPDContext *ctx, const char *dir) {
 	assert(ctx != NULL);
 	assert(dir != NULL);
+	
+	if (!httpd_file_exists(dir)) {
+		fprintf(stderr, "Erro: %s não existe\n", dir);
+		exit(-1);
+	}
 
 	ctx->directory = strdup(dir);
 }

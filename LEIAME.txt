@@ -1,0 +1,84 @@
+
+
+Nome: Max Rosan dos Santos Junior
+E-Mail: maxrosan@ime.usp.br
+Aluno de Mestrado em Computação/IME-USP
+
+                     MinHTTPD
+
+1) Descrição
+
+    Este projeto tem como principal objetivo implementar um servidor
+de HTTP simples e leve. Apesar de a simplicidade ser prezada no
+presente projeto, o servidor tem como objetivo ser o mais configurável
+possível.
+
+2) Dependências
+
+	O usuário deve ter instalada a biblioteca zlib com os seus
+arquivos de desenvolvimento.
+
+3) Compilação
+
+	Para compilar o servidor é necessário rodar o comando make na
+pasta raiz do projeto. Uma vez com comando executado, caso a compilação
+tenha sido realizada sem problemas, novos arquivos binários serão gerados.
+O principal deles é o executável minhttpd, que é o programa que executará
+o servidor.
+
+4) Configuração
+	
+	Antes de rodar o minhttpd é necessário modificar os parâmetros que
+se encotram no arquivo de configuração chamado config.ini. Esses parâmetros
+definem conteúdos que o servidor deve retornar, além dos locais nos quais o
+servidor pode ter acesso.
+	Como a extensão já diz, config.ini é um arquivo do tipo INI e sua
+estrutura pode ser dividida em seções. Em cada seção tem-se diversos
+parâmetros.
+	Para a configuração do MinHTTP só é permitido ter
+a seção Server e seções Extensions para a configuração das extensões.
+
+4.5) Seção Server
+	A seção Server define os parâmetros para configuração do servidor.
+Na versão corrente só há três parâmetros para essa seção:
+
+a) path
+	Define em qual pasta os arquivos requisitos por um cliente
+serão buscados.
+
+b) keepalivetimeout
+	Determina na ordem de segundos o tempo máximo
+que uma conexão pode permanecer aberta do cliente para o servidor.
+
+c) errorpage
+	Define o caminho, relativo ao caminho dado em path, do arquivo
+que será retornado para o cliente caso um erro 404 ocorra.
+
+4.6) Seção Extension
+	Uma seção Extension mapeia uma extensão de arquivo para um
+determinado tipo de conteúdo. O nome da seção, desde que comece com
+Extension_ seguido por uma palavra, é indiferente para a interpretação do
+arquivo de configuração pelo servidor, mas é aconselhável que o nome esteja
+relacionado à extensão mapeada. Como a seção anterior uma Extension tem somente
+três parâmetros:
+
+a) type
+	Esse parâmetro está reservado para uso futuro. Na versão corrente
+deve ter sempre o valor FILE.
+
+b) extension
+	Extensão do arquivo. O valor pode conter várias extensões desde que
+sejam separadas por vírgulas.
+
+c) content_type
+	Define o tipo do conteúdo do arquivo que contém a extensão
+
+5) Execução
+	O executável minhttpd tem como único argumento a porta a ser utlizada
+pelo servidor. O valor da porta pode ser passado por três modos: precedido por
+-p ou --port, ou então ser passado somente o valor da porta. Exemplo:
+./minhttpd 8080 ou ./minhttpd -p 8080.
+	Uma vez que o programa esteja em execução, requisições enviadas por
+clientes na porta definida serão esperadas.
+	Para sair do programa é necessário pressionar Ctrl-C.
+	
